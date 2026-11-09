@@ -49,8 +49,8 @@ const DeleteTaskHandler = (function createDeleteTaskHandler() {
         throw new Error('Missing task name');
       }
 
-      console.log(colors.notify(`Task '${_private.get(this).taskName}' deleted`));
       await tasksManager.deleteTask(_private.get(this).taskName);
+      console.log(colors.notify(`Task '${_private.get(this).taskName}' deleted`));
     }
   }
 

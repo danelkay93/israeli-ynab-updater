@@ -1,3 +1,7 @@
+import path from 'path';
+import crypto from 'crypto';
+import safeError from '../helpers/safe-error';
+import { writeJsonFile } from '../helpers/files';
 import moment from 'moment';
 import inquirer from 'inquirer';
 import colors from 'colors/safe';
@@ -44,92 +48,58 @@ async function getParameters() {
 
 export default async function scrapeTask(showBrowser) {
   const { taskName } = await getParameters();
-
-  if (taskName) {
-    console.log(colors.title(`Running task '${taskName}'`));
-    const taskData = await tasksManager.loadTask(taskName);
-    const scrapersOfTask = taskData.scrapers || [];
-
-    if (scrapersOfTask.length === 0) {
-      console.log(
-        colors.notify(
-          "Task has no scrapers defined.\nplease run command 'npm run setup' and update task scrapers"
-        )
-      );
-      return;
-    }
-
-    printTaskSummary(taskData, true);
-
-    const { dateDiffByMonth, combineInstallments } = taskData.options;
-    const {
-      combineReport,
-      saveLocation: saveLocationRootPath,
-      includeFutureTransactions,
-      includePendingTransactions,
-    } = taskData.output;
-    const substractValue = dateDiffByMonth - 1;
-    const startMoment = moment()
-      .subtract(substractValue, 'month')
-      .startOf('month');
-    const reportAccounts = [];
-
-    console.log(colors.title('Run task scrapers'));
-
-    for (let i = 0; i < scrapersOfTask.length; i += 1) {
-      const scraperOfTask = scrapersOfTask[i];
-      const credentials = decryptCredentials(scraperOfTask.credentials);
-      const credentialsWithOtp = Object.assign(credentials, {
-        otpCodeRetriever: async () => {
-          const { otpCode } = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'otpCode',
-              message: 'Enter OTP code:',
-            },
-          ]);
-          return otpCode;
-        },
-      });
-
-      const options = {
-        companyId: scraperOfTask.id,
-        startDate: startMoment,
-        combineInstallments,
-        showBrowser,
-        verbose: false,
+  if (!taskName) return;
+  const taskData = await tasksManager.loadTask(taskName);
+  const scrapersOfTask = taskData.scrapers || [];
+  if (!scrapersOfTask.length) {
+    console.log('Task has no scrapers configured.');
+    return;
+  }
+  printTaskSummary(taskData, true);
+  const { dateDiffByMonth, combineInstallments } = taskData.options;
+  if (!Number.isInteger(dateDiffByMonth) || dateDiffByMonth < 1 || dateDiffByMonth > 120) {
+    throw new Error('INVALID_TASK_DATE_RANGE');
+  }
+  const { combineReport, saveLocation: root, includeFutureTransactions, includePendingTransactions } = taskData.output;
+  const startDate = moment().subtract(dateDiffByMonth - 1, 'month').startOf('month').toDate();
+  const saveLocation = path.join(root, 'tasks', taskName,
+    moment().format(DATE_TIME_FORMAT) + '-' + crypto.randomBytes(8).toString('hex'));
+  const status = { requestedSources: scrapersOfTask.length, successfulSources: [], failures: [],
+    warnings: ['UPSTREAM_COMPLETENESS_UNVERIFIED'], complete: false };
+  // Fail before bank login if the export destination cannot be created.
+  await writeJsonFile(path.join(saveLocation, 'run-status.json'), { ...status, exportFinished: false });
+  const reportAccounts = [];
+  for (let i = 0; i < scrapersOfTask.length; i += 1) {
+    try {
+      const source = scrapersOfTask[i];
+      const credentials = await decryptCredentials(source.credentials);
+      credentials.otpCodeRetriever = async () => {
+        const { otpCode } = await inquirer.prompt([
+          { type: 'password', mask: '*', name: 'otpCode', message: 'Enter OTP code:' },
+        ]);
+        return otpCode;
       };
-
-      try {
-        const scrapedAccounts = await scrape(
-          scraperOfTask.id,
-          credentialsWithOtp,
-          options
-        );
-        reportAccounts.push(...scrapedAccounts);
-      } catch (e) {
-        console.error(e);
-        throw e;
-      }
-    }
-
-    if (combineReport) {
-      const saveLocation = `${saveLocationRootPath}/tasks/${taskName}`;
-      await generateSingleReport(
-        reportAccounts,
-        saveLocation,
-        includeFutureTransactions,
-        includePendingTransactions
-      );
-    } else {
-      const currentExecutionFolder = moment().format(DATE_TIME_FORMAT);
-      const saveLocation = `${saveLocationRootPath}/tasks/${taskName}/${currentExecutionFolder}`;
-      await generateSeparatedReports(
-        reportAccounts,
-        saveLocation,
-        includeFutureTransactions,
-        includePendingTransactions
-      );
+      const read = await scrape(source.id, credentials, { startDate, combineInstallments, showBrowser });
+      reportAccounts.push(...read.accounts);
+      status.successfulSources.push(i);
+      status.warnings.push(...read.warnings);
+    } catch (error) {
+      const code = safeError(error);
+      status.failures.push({ sourceIndex: i, code });
+      console.error('Source failed:', code);
     }
   }
+  status.warnings = [...new Set(status.warnings)];
+  try {
+    if (combineReport) {
+      await generateSingleReport(reportAccounts, saveLocation, includeFutureTransactions, includePendingTransactions, status);
+    } else {
+      await generateSeparatedReports(reportAccounts, saveLocation, includeFutureTransactions, includePendingTransactions, status);
+    }
+    await writeJsonFile(path.join(saveLocation, 'run-status.json'), { ...status, exportFinished: true });
+  } catch (_) {
+    await writeJsonFile(path.join(saveLocation, 'run-status.json'), { ...status, exportFinished: false, exportError: 'EXPORT_FAILED' });
+    throw new Error('EXPORT_FAILED');
+  }
+  if (status.failures.length) process.exitCode = 1;
 }

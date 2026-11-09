@@ -239,7 +239,7 @@ const ModifyTaskHandler = (function createModifyTaskHandler() {
               };
             });
           const credentialsResult = await inquirer.prompt(questions);
-          const encryptedCredentials = encryptCredentials(credentialsResult);
+          const encryptedCredentials = await encryptCredentials(credentialsResult);
 
           const scraperData = _private
             .get(this)

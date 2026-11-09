@@ -1,3 +1,4 @@
+import safeError from './helpers/safe-error';
 import yargs from 'yargs';
 import colors from 'colors/safe';
 import setupMainMenu from './setup/setup-main-menu';
@@ -22,8 +23,12 @@ const args = yargs.options({
   },
 }).help().argv;
 
-if (!args.mode || args.mode === 'scrape') {
-  scrapingMainMenu(args.show);
-} else if (args.mode === 'setup') {
-  setupMainMenu();
+async function main() {
+  if (!args.mode || args.mode === 'scrape') await scrapingMainMenu(args.show);
+  else if (args.mode === 'setup') await setupMainMenu();
+  else throw new Error('INVALID_MODE');
 }
+main().catch((error) => {
+  console.error(safeError(error));
+  process.exitCode = 1;
+});

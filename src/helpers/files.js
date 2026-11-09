@@ -1,57 +1,45 @@
 import fs from 'fs';
 import path from 'path';
-import util from 'util';
-import jsonfile from 'jsonfile';
+import crypto from 'crypto';
 
-const writeFileAsync = util.promisify(fs.writeFile);
-const existsAsync = util.promisify(fs.exists);
-const makeDirAsync = util.promisify(fs.mkdir);
-const readdirAsync = util.promisify(fs.readdir);
-const deleteFileAsync = util.promisify(fs.unlink);
-const readJsonFileAsync = util.promisify(jsonfile.readFile);
-const writeJsonFileAsync = util.promisify(jsonfile.writeFile);
-
+// Modes protect new files on POSIX. Windows requires a private directory ACL.
 async function verifyFolder(folderPath) {
-  const pathTokens = folderPath.split(path.sep);
-  let currentPath = '';
-  for (let i = 0; i < pathTokens.length; i += 1) {
-    const folder = pathTokens[i];
-    currentPath += folder + path.sep;
-    if (!await existsAsync(currentPath)) {
-      await makeDirAsync(currentPath);
-    }
-  }
+  await fs.promises.mkdir(folderPath, { recursive: true, mode: 0o700 });
 }
 
 export async function getFolderFiles(folderPath, suffix) {
   await verifyFolder(folderPath);
-  const files = await readdirAsync(folderPath);
-  if (suffix) {
-    return files.filter((filePath) => (path.extname(filePath) || '').toLowerCase() === suffix.toLowerCase());
-  }
-  return files;
+  const files = await fs.promises.readdir(folderPath, { withFileTypes: true });
+  return files.filter((file) => file.isFile()
+    && (!suffix || path.extname(file.name).toLowerCase() === suffix.toLowerCase()))
+    .map((file) => file.name);
 }
 
 export async function deleteFile(filePath) {
-  return deleteFileAsync(filePath);
+  return fs.promises.unlink(filePath);
 }
 
-export async function writeFile(filePath, data, options) {
-  const folderPath = path.dirname(filePath);
-  await verifyFolder(folderPath);
-  return writeFileAsync(filePath, data, options);
-}
-
-export async function readJsonFile(filePath, options) {
-  const exists = await existsAsync(filePath);
-  if (!exists) {
-    return null;
+export async function writeFile(filePath, data) {
+  await verifyFolder(path.dirname(filePath));
+  // Exclusive temporary file + rename avoids partial writes and symlink following.
+  const temporary = filePath + '.' + crypto.randomBytes(16).toString('hex') + '.tmp';
+  try {
+    await fs.promises.writeFile(temporary, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await fs.promises.rename(temporary, filePath);
+  } finally {
+    await fs.promises.unlink(temporary).catch(() => {});
   }
-  return readJsonFileAsync(filePath, options);
 }
 
-export async function writeJsonFile(filePath, obj, options) {
-  const folderPath = path.dirname(filePath);
-  await verifyFolder(folderPath);
-  await writeJsonFileAsync(filePath, obj, options);
+export async function readJsonFile(filePath) {
+  try {
+    return JSON.parse(await fs.promises.readFile(filePath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw new Error('CONFIG_READ_FAILED');
+  }
+}
+
+export async function writeJsonFile(filePath, obj) {
+  return writeFile(filePath, JSON.stringify(obj, null, 2));
 }

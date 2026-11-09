@@ -1,0 +1,10 @@
+// Only locally defined codes reach logs/status files; raw portal errors can contain credentials.
+const CODES = new Set(['INVALID_PASSWORD', 'ACCOUNT_BLOCKED', 'CHANGE_PASSWORD',
+  'TIMEOUT', 'GENERAL_ERROR', 'GENERIC', 'TWO_FACTOR_RETRIEVER_MISSING', 'AUTOMATION_BLOCKED',
+  'UNKNOWN_SCRAPER', 'INVALID_SCRAPER_RESPONSE', 'SCRAPER_FAILED',
+  'LEGACY_CREDENTIALS_REENTER_REQUIRED', 'CREDENTIAL_DECRYPTION_FAILED',
+  'PASSPHRASE_CONFIRMATION_FAILED', 'CONFIG_READ_FAILED',
+  'INVALID_TASK_DATE_RANGE', 'EXPORT_FAILED', 'INVALID_MODE']);
+export default function safeError(error) {
+  return error && CODES.has(error.message) ? error.message : 'OPERATION_FAILED';
+}

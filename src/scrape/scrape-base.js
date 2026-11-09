@@ -1,76 +1,48 @@
 import moment from 'moment';
 import { SCRAPERS, createScraper } from '../helpers/scrapers';
 
-async function prepareResults(
-  scraperId,
-  scraperName,
-  scraperResult,
-  combineInstallments
-) {
-  return scraperResult.accounts.map((account) => {
-    console.log(
-      `${scraperName}: scraped ${account.txns.length} transactions from account ${account.accountNumber}`,
-    );
-
-    const txns = account.txns.map((txn) => {
-      return {
-        company: scraperName,
-        account: account.accountNumber,
-        dateMoment: moment(txn.date),
-        payee: txn.description,
-        status: txn.status,
-        amount:
-          txn.type !== 'installments' || !combineInstallments
-            ? txn.chargedAmount
-            : txn.originalAmount,
-        installment: txn.installments ? txn.installments.number : null,
-        total: txn.installments ? txn.installments.total : null,
-      };
-    });
-
-    return {
-      scraperId,
-      scraperName,
-      accountNumber: account.accountNumber,
-      txns,
-    };
-  });
-}
+const ERROR_TYPES = new Set(['INVALID_PASSWORD', 'ACCOUNT_BLOCKED', 'CHANGE_PASSWORD',
+  'TIMEOUT', 'GENERAL_ERROR', 'GENERIC', 'TWO_FACTOR_RETRIEVER_MISSING', 'AUTOMATION_BLOCKED']);
 
 export default async function scrape(scraperId, credentials, options) {
   const { combineInstallments, startDate, showBrowser } = options;
-
-  const scraperOptions = {
-    companyId: scraperId,
-    startDate,
-    combineInstallments,
-    showBrowser,
-    verbose: false,
-  };
   const scraperName = SCRAPERS[scraperId] ? SCRAPERS[scraperId].name : null;
-
-  if (!scraperName) {
-    throw new Error(`unknown scraper with id ${scraperId}`);
+  if (!scraperName) throw new Error('UNKNOWN_SCRAPER');
+  let result;
+  try {
+    const scraper = createScraper({ companyId: scraperId, startDate, combineInstallments, showBrowser, verbose: false });
+    result = await scraper.scrape(credentials);
+  } catch (_) {
+    throw new Error('SCRAPER_FAILED');
   }
-  console.log(`scraping ${scraperName}`);
-
-  const scraper = createScraper(scraperOptions);
-  scraper.onProgress((companyId, payload) => {
-    console.log(`${scraperName}: ${payload.type}`);
+  if (!result || !result.success) {
+    throw new Error(result && ERROR_TYPES.has(result.errorType) ? result.errorType : 'SCRAPER_FAILED');
+  }
+  if (!Array.isArray(result.accounts)) throw new Error('INVALID_SCRAPER_RESPONSE');
+  const warnings = ['UPSTREAM_COMPLETENESS_UNVERIFIED'];
+  // The reviewed scraper source reports known gaps only as completeness.status
+  // and issues. The locked 3.6.0 artifact is unreviewed and may supply neither.
+  const completeness = result.completeness || {};
+  const issues = Array.isArray(completeness.issues) ? completeness.issues : [];
+  if (completeness.status === 'partial' || issues.length) warnings.push('UPSTREAM_PARTIAL');
+  const accounts = result.accounts.map((account) => {
+    if (!Array.isArray(account.txns)) throw new Error('INVALID_SCRAPER_RESPONSE');
+    const txns = [];
+    account.txns.forEach((txn) => {
+      const dateMoment = moment(txn.date);
+      const amount = txn.type !== 'installments' || !combineInstallments ? txn.chargedAmount : txn.originalAmount;
+      if (!txn.date || !dateMoment.isValid() || typeof amount !== 'number' || !Number.isFinite(amount)) {
+        warnings.push('INVALID_TRANSACTION_OMITTED');
+        return;
+      }
+      txns.push({
+        company: scraperName, account: account.accountNumber, dateMoment,
+        payee: txn.description, status: txn.status, amount,
+        installment: txn.installments ? txn.installments.number : null,
+        total: txn.installments ? txn.installments.total : null,
+      });
+    });
+    return { scraperId, scraperName, accountNumber: account.accountNumber, txns };
   });
-  const scraperResult = await scraper.scrape(credentials);
-
-  console.log(`success: ${scraperResult.success}`);
-  if (!scraperResult.success) {
-    console.log(`error type: ${scraperResult.errorType}`);
-    console.log('error:', scraperResult.errorMessage);
-    throw new Error(scraperResult.errorMessage);
-  }
-
-  return prepareResults(
-    scraperId,
-    scraperName,
-    scraperResult,
-    combineInstallments
-  );
+  return { accounts, warnings: [...new Set(warnings)] };
 }

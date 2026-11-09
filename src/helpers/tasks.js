@@ -61,11 +61,11 @@ class TasksManager {
   }
 
   isValidTaskName(taskName) {
-    return taskName && taskName.match(/^[a-zA-Z0-9_-]+$/);
+    return typeof taskName === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(taskName) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(taskName);
   }
 
   async loadTask(taskName) {
-    if (taskName && this.hasTask(taskName)) {
+    if (this.isValidTaskName(taskName) && await this.hasTask(taskName)) {
       return readJsonFile(`${TASKS_FOLDER}/${taskName}.json`);
     }
 
@@ -81,7 +81,7 @@ class TasksManager {
   }
 
   async deleteTask(taskName) {
-    if (taskName && this.hasTask(taskName)) {
+    if (this.isValidTaskName(taskName) && await this.hasTask(taskName)) {
       await deleteFile(`${TASKS_FOLDER}/${taskName}.json`);
     } else {
       throw new Error(`invalid task name provided ${taskName}`);

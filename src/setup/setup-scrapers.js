@@ -39,7 +39,7 @@ export default async function setupScrapers() {
       };
     });
   const credentialsResult = await inquirer.prompt(questions);
-  const encryptedCredentials = encryptCredentials(credentialsResult);
+  const encryptedCredentials = await encryptCredentials(credentialsResult);
   await writeJsonFile(
     `${CONFIG_FOLDER}/${scraperIdResult.scraperId}.json`,
     encryptedCredentials
